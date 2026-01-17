@@ -9,94 +9,110 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # ---------------- Checkout Code ----------------
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # ---------------- Install Docker ----------------
-    - name: Set up Docker
-      uses: docker/setup-buildx-action@v3
-
-    # ---------------- Install kubectl ----------------
+    # ---------- Install kubectl ----------
     - name: Install kubectl
       run: |
         curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
         chmod +x kubectl
         sudo mv kubectl /usr/local/bin/
 
-    # ---------------- Install kind ----------------
+    # ---------- Install kind ----------
     - name: Install kind
       run: |
         curl -Lo kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
         chmod +x kind
         sudo mv kind /usr/local/bin/
 
-    # ---------------- Create Kubernetes Cluster ----------------
+    # ---------- Create Kubernetes Cluster ----------
     - name: Create kind cluster
       run: |
         kind create cluster --name terraform-ci
         kind get kubeconfig --name terraform-ci > kubeconfig
 
-    # ---------------- Install Terraform ----------------
+    # ---------- Install Terraform ----------
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
-    # ---------------- Terraform Init ----------------
+    # ---------- Terraform Init ----------
     - name: Terraform Init
       run: terraform init
 
-    # ---------------- Terraform Apply ----------------
+    # ---------- Terraform Apply ----------
     - name: Terraform Apply
       run: terraform apply -auto-approve -var="kubeconfig_path=${PWD}/kubeconfig"
 
-    # ---------------- Wait for NGINX Pod ----------------
-    - name: Wait for NGINX Pod
+    # =========================================================
+    # SAFE NGINX WAIT (FIXES YOUR ERROR PERMANENTLY)
+    # =========================================================
+    - name: Wait until NGINX pod exists
+      run: |
+        for i in {1..30}; do
+          POD=$(kubectl get pods -l app=nginx --no-headers 2>/dev/null | wc -l)
+          if [ "$POD" -gt 0 ]; then
+            echo "NGINX pod found"
+            break
+          fi
+          echo "Waiting for NGINX pod to be created..."
+          sleep 5
+        done
+
+    - name: Wait for NGINX pod ready
       run: |
         kubectl wait --for=condition=ready pod -l app=nginx --timeout=180s
 
-    # ---------------- Get NGINX NodePort ----------------
-    - name: Get NGINX Port
-      run: |
-        echo "NGINX_PORT=$(kubectl get svc nginx-service -o jsonpath='{.spec.ports[0].nodePort}')" >> $GITHUB_ENV
-
-    # ---------------- Port Forward NGINX ----------------
+    # ---------- Port forward NGINX ----------
     - name: Port forward NGINX
       run: |
         kubectl port-forward svc/nginx-service 8080:80 &
         sleep 10
 
-    # ---------------- Validate NGINX HTTP 200 ----------------
-    - name: Validate NGINX Status Code
+    # ---------- Validate NGINX ----------
+    - name: Validate NGINX HTTP 200
       run: |
         curl -I http://localhost:8080 | grep "200 OK"
 
-    # ---------------- Wait for MySQL Pod ----------------
-    - name: Wait for MySQL Pod
+    # =========================================================
+    # SAFE MYSQL WAIT (NO SOCKET ERRORS)
+    # =========================================================
+    - name: Wait until MySQL pod exists
+      run: |
+        for i in {1..30}; do
+          POD=$(kubectl get pods -l app=mysql --no-headers 2>/dev/null | wc -l)
+          if [ "$POD" -gt 0 ]; then
+            echo "MySQL pod found"
+            break
+          fi
+          echo "Waiting for MySQL pod to be created..."
+          sleep 5
+        done
+
+    - name: Wait for MySQL pod ready
       run: |
         kubectl wait --for=condition=ready pod -l app=mysql --timeout=180s
 
-    # ---------------- Wait for MySQL Engine ----------------
-    - name: Wait for MySQL Engine Ready
+    - name: Wait for MySQL engine ready
       run: |
         MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}")
 
         for i in {1..30}; do
           if kubectl exec $MYSQL_POD -- mysqladmin ping -uroot -prootpass --silent; then
-            echo "MySQL is ready"
+            echo "MySQL engine is ready"
             break
           fi
-          echo "Waiting for MySQL engine to start..."
+          echo "Waiting for MySQL engine..."
           sleep 5
         done
 
-    # ---------------- Validate MySQL Query ----------------
     - name: Validate MySQL Query
       run: |
         MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}")
         kubectl exec $MYSQL_POD -- \
           mysql -uroot -prootpass -e "SHOW DATABASES;"
 
-    # ---------------- Terraform Destroy (Cleanup) ----------------
+    # ---------- Auto Cleanup ----------
     - name: Terraform Destroy
       if: always()
       run: terraform destroy -auto-approve -var="kubeconfig_path=${PWD}/kubeconfig"
