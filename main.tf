@@ -1,20 +1,3 @@
-terraform {
-  required_providers {
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.25"
-    }
-  }
-}
-
-provider "kubernetes" {
-  config_path = var.kubeconfig_path
-}
-
-####################
-# NGINX DEPLOYMENT
-####################
-
 resource "kubernetes_deployment" "nginx" {
   metadata {
     name = "nginx"
@@ -73,10 +56,6 @@ resource "kubernetes_service" "nginx" {
   }
 }
 
-####################
-# MYSQL DEPLOYMENT (HARDENED FOR KIND)
-####################
-
 resource "kubernetes_deployment" "mysql" {
   metadata {
     name = "mysql"
@@ -106,38 +85,13 @@ resource "kubernetes_deployment" "mysql" {
           name  = "mysql"
           image = "mysql:8.0"
 
-          port {
-            container_port = 3306
-          }
-
           env {
             name  = "MYSQL_ROOT_PASSWORD"
             value = "rootpassword"
           }
 
-          # 🔥 REQUIRED FOR KIND STABILITY
-          args = [
-            "--default-authentication-plugin=mysql_native_password",
-            "--skip-host-cache",
-            "--skip-name-resolve",
-            "--innodb-use-native-aio=0",
-            "--innodb-flush-method=O_DIRECT_NO_FSYNC"
-          ]
-
-          readiness_probe {
-            exec {
-              command = ["bash", "-c", "mysqladmin ping -uroot -prootpassword"]
-            }
-            initial_delay_seconds = 30
-            period_seconds        = 10
-          }
-
-          liveness_probe {
-            exec {
-              command = ["bash", "-c", "mysqladmin ping -uroot -prootpassword"]
-            }
-            initial_delay_seconds = 60
-            period_seconds        = 20
+          port {
+            container_port = 3306
           }
         }
       }
@@ -162,16 +116,4 @@ resource "kubernetes_service" "mysql" {
 
     type = "ClusterIP"
   }
-}
-
-####################
-# OUTPUTS
-####################
-
-output "nginx_node_port" {
-  value = kubernetes_service.nginx.spec[0].port[0].node_port
-}
-
-output "mysql_service_cluster_ip" {
-  value = kubernetes_service.mysql.spec[0].cluster_ip
 }
