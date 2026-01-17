@@ -1,4 +1,4 @@
-name: Terraform + Kind + Kubernetes CI
+name: Terraform + Kubernetes CI
 
 on:
   push:
@@ -9,71 +9,96 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------- Checkout ----------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ------------------ Install Docker ------------------
-      - name: Set up Docker
-        uses: docker/setup-buildx-action@v3
-
-      # ------------------ Install Kind ------------------
-      - name: Install Kind
-        run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-          kind version
-
-      # ------------------ Install kubectl ------------------
+      # ---------------- Install kubectl ----------------
       - name: Install kubectl
         run: |
-          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          curl -LO "https://dl.k8s.io/release/$(curl -Ls https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
-          kubectl version --client
 
-      # ------------------ Create Kind Cluster ------------------
-      - name: Create Kind Cluster
+      # ---------------- Install kind ----------------
+      - name: Install kind
+        run: |
+          curl -Lo kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
+          chmod +x kind
+          sudo mv kind /usr/local/bin/
+
+      # ---------------- Create Kubernetes Cluster ----------------
+      - name: Create kind cluster
         run: |
           kind create cluster --name terraform-ci
           kind get kubeconfig --name terraform-ci > kubeconfig
+          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
 
-      # ------------------ Setup Terraform ------------------
+      # ---------------- Install Terraform ----------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      # ------------------ Terraform Init ------------------
+      # ---------------- Terraform Init ----------------
       - name: Terraform Init
         run: terraform init
 
-      # ------------------ Terraform Apply ------------------
+      # ---------------- Terraform Apply ----------------
       - name: Terraform Apply
-        run: terraform apply -auto-approve -var="kubeconfig_path=$(pwd)/kubeconfig"
+        run: terraform apply -auto-approve -var="kubeconfig_path=$KUBECONFIG"
 
-      # ------------------ Wait for Pods ------------------
-      - name: Wait for Nginx Pod
+      # ============================================================
+      # FIXED: Wait for resources to EXIST first (race condition fix)
+      # ============================================================
+
+      # ---------------- Wait for Nginx Pod Creation ----------------
+      - name: Wait for Nginx Pod Creation
+        run: |
+          for i in {1..30}; do
+            if kubectl get pods -l app=nginx | grep nginx; then
+              echo "Nginx pod found"
+              break
+            fi
+            echo "Waiting for nginx pod to be created..."
+            sleep 5
+          done
+
+      - name: Wait for Nginx Pod Ready
         run: kubectl wait --for=condition=ready pod -l app=nginx --timeout=180s
 
-      - name: Wait for MySQL Pod
+      # ---------------- Wait for MySQL Pod Creation ----------------
+      - name: Wait for MySQL Pod Creation
+        run: |
+          for i in {1..30}; do
+            if kubectl get pods -l app=mysql | grep mysql; then
+              echo "MySQL pod found"
+              break
+            fi
+            echo "Waiting for mysql pod to be created..."
+            sleep 5
+          done
+
+      - name: Wait for MySQL Pod Ready
         run: kubectl wait --for=condition=ready pod -l app=mysql --timeout=180s
 
-      # ------------------ Validate Nginx (Correct CI Method) ------------------
-      - name: Port-forward Nginx
-        run: |
-          kubectl port-forward svc/nginx 8080:80 &
-          sleep 10
+      # ---------------- Port Forward Nginx ----------------
+      - name: Port forward Nginx
+        run: kubectl port-forward svc/nginx-service 8080:80 &
+      
+      - name: Wait for port forward
+        run: sleep 10
 
-      - name: Validate Nginx HTTP 200
-        run: |
-          curl -I http://localhost:8080 | grep "200 OK"
+      # ---------------- Validate Nginx ----------------
+      - name: Validate Nginx 200 OK
+        run: curl -I http://localhost:8080 | grep "200 OK"
 
-      # ------------------ Validate MySQL ------------------
-      - name: Validate MySQL Query
+      # ---------------- Validate MySQL Query ----------------
+      - name: Validate MySQL Connection
         run: |
           MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}")
-          kubectl exec $MYSQL_POD -- mysql -uroot -prootpass -e "SHOW DATABASES;"
+          kubectl exec $MYSQL_POD -- \
+            mysql -uroot -prootpass -e "SHOW DATABASES;"
 
-      # ------------------ Cleanup ------------------
+      # ---------------- Terraform Destroy ----------------
       - name: Terraform Destroy
         if: always()
-        run: terraform destroy -auto-approve -var="kubeconfig_path=$(pwd)/kubeconfig"
+        run: terraform destroy -auto-approve -var="kubeconfig_path=$KUBECONFIG"
