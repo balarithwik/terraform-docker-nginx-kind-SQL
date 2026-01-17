@@ -37,7 +37,8 @@ jobs:
         run: terraform init
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve -var="kubeconf
+        run: terraform apply -auto-approve -var="kubeconfig_path=${KUBECONFIG}"
+
 
       - name: Wait for NGINX Pod
         run: |
@@ -76,4 +77,4 @@ jobs:
 
       - name: Terraform Destroy
         if: always()
-        run: terraform destroy -auto-approve
+        run: terraform destroy -auto-approve -var="kubeconfig_path=${KUBECONFIG}"
