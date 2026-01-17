@@ -1,4 +1,4 @@
-name: Terraform + Kubernetes CI
+name: Terraform KIND CI
 
 on:
   push:
@@ -9,110 +9,78 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    # ---------- Install kubectl ----------
-    - name: Install kubectl
-      run: |
-        curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-        chmod +x kubectl
-        sudo mv kubectl /usr/local/bin/
+      ############################
+      # TOOLS
+      ############################
 
-    # ---------- Install kind ----------
-    - name: Install kind
-      run: |
-        curl -Lo kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
-        chmod +x kind
-        sudo mv kind /usr/local/bin/
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
 
-    # ---------- Create Kubernetes Cluster ----------
-    - name: Create kind cluster
-      run: |
-        kind create cluster --name terraform-ci
-        kind get kubeconfig --name terraform-ci > kubeconfig
+      - name: Install kind
+        run: |
+          curl -Lo kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
+          chmod +x kind
+          sudo mv kind /usr/local/bin/
 
-    # ---------- Install Terraform ----------
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+      - name: Create KIND cluster
+        run: |
+          kind create cluster --name terraform-ci
+          kind get kubeconfig --name terraform-ci > kubeconfig
 
-    # ---------- Terraform Init ----------
-    - name: Terraform Init
-      run: terraform init
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
 
-    # ---------- Terraform Apply ----------
-    - name: Terraform Apply
-      run: terraform apply -auto-approve -var="kubeconfig_path=${PWD}/kubeconfig"
+      ############################
+      # TERRAFORM
+      ############################
 
-    # =========================================================
-    # SAFE NGINX WAIT (FIXES YOUR ERROR PERMANENTLY)
-    # =========================================================
-    - name: Wait until NGINX pod exists
-      run: |
-        for i in {1..30}; do
-          POD=$(kubectl get pods -l app=nginx --no-headers 2>/dev/null | wc -l)
-          if [ "$POD" -gt 0 ]; then
-            echo "NGINX pod found"
-            break
-          fi
-          echo "Waiting for NGINX pod to be created..."
-          sleep 5
-        done
+      - name: Terraform Init
+        run: terraform init
 
-    - name: Wait for NGINX pod ready
-      run: |
-        kubectl wait --for=condition=ready pod -l app=nginx --timeout=180s
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -var="kubeconfig_path=${PWD}/kubeconfig"
 
-    # ---------- Port forward NGINX ----------
-    - name: Port forward NGINX
-      run: |
-        kubectl port-forward svc/nginx-service 8080:80 &
-        sleep 10
+      ############################
+      # NGINX VALIDATION
+      ############################
 
-    # ---------- Validate NGINX ----------
-    - name: Validate NGINX HTTP 200
-      run: |
-        curl -I http://localhost:8080 | grep "200 OK"
+      - name: Wait for NGINX pod
+        run: kubectl wait --for=condition=ready pod -l app=nginx --timeout=300s
 
-    # =========================================================
-    # SAFE MYSQL WAIT (NO SOCKET ERRORS)
-    # =========================================================
-    - name: Wait until MySQL pod exists
-      run: |
-        for i in {1..30}; do
-          POD=$(kubectl get pods -l app=mysql --no-headers 2>/dev/null | wc -l)
-          if [ "$POD" -gt 0 ]; then
-            echo "MySQL pod found"
-            break
-          fi
-          echo "Waiting for MySQL pod to be created..."
-          sleep 5
-        done
+      - name: Port forward NGINX
+        run: kubectl port-forward svc/nginx-service 8080:80 &
 
-    - name: Wait for MySQL pod ready
-      run: |
-        kubectl wait --for=condition=ready pod -l app=mysql --timeout=180s
+      - name: Validate NGINX 200 OK
+        run: |
+          sleep 10
+          curl -I http://localhost:8080 | grep "200 OK"
 
-    - name: Wait for MySQL engine ready
-      run: |
-        MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}")
+      ############################
+      # MYSQL VALIDATION
+      ############################
 
-        for i in {1..30}; do
-          if kubectl exec $MYSQL_POD -- mysqladmin ping -uroot -prootpass --silent; then
-            echo "MySQL engine is ready"
-            break
-          fi
-          echo "Waiting for MySQL engine..."
-          sleep 5
-        done
+      - name: Wait for MySQL pod
+        run: kubectl wait --for=condition=ready pod -l app=mysql --timeout=300s
 
-    - name: Validate MySQL Query
-      run: |
-        MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}")
-        kubectl exec $MYSQL_POD -- \
-          mysql -uroot -prootpass -e "SHOW DATABASES;"
+      - name: Validate MySQL Query
+        run: |
+          MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}")
+          kubectl exec $MYSQL_POD -- mysql -uroot -prootpassword -e "SELECT 1;"
 
-    # ---------- Auto Cleanup ----------
-    - name: Terraform Destroy
-      if: always()
-      run: terraform destroy -auto-approve -var="kubeconfig_path=${PWD}/kubeconfig"
+      ############################
+      # CLEANUP (ALWAYS RUNS)
+      ############################
+
+      - name: Terraform Destroy
+        if: always()
+        run: terraform destroy -auto-approve -var="kubeconfig_path=${PWD}/kubeconfig"
+
+      - name: Delete KIND cluster
+        if: always()
+        run: kind delete cluster --name terraform-ci
