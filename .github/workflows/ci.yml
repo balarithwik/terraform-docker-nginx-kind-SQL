@@ -1,4 +1,4 @@
-name: Terraform KIND CI
+name: Terraform + Kind + NGINX + MySQL CI
 
 on:
   push:
@@ -9,78 +9,125 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      ############################
-      # TOOLS
-      ############################
-
+      # -------------------------------
+      # Install kubectl
+      # -------------------------------
       - name: Install kubectl
         run: |
           curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
 
+      # -------------------------------
+      # Install kind
+      # -------------------------------
       - name: Install kind
         run: |
           curl -Lo kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
           chmod +x kind
           sudo mv kind /usr/local/bin/
 
-      - name: Create KIND cluster
+      # -------------------------------
+      # Create Kubernetes cluster
+      # -------------------------------
+      - name: Create kind cluster
         run: |
           kind create cluster --name terraform-ci
           kind get kubeconfig --name terraform-ci > kubeconfig
+          echo "KUBECONFIG=${PWD}/kubeconfig" >> $GITHUB_ENV
 
+      # -------------------------------
+      # Setup Terraform
+      # -------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      ############################
-      # TERRAFORM
-      ############################
-
+      # -------------------------------
+      # Terraform Init
+      # -------------------------------
       - name: Terraform Init
         run: terraform init
 
+      # -------------------------------
+      # Terraform Apply
+      # -------------------------------
       - name: Terraform Apply
-        run: terraform apply -auto-approve -var="kubeconfig_path=${PWD}/kubeconfig"
+        run: terraform apply -auto-approve -var="kubeconfig_path=${KUBECONFIG}"
 
-      ############################
+      # ===============================
       # NGINX VALIDATION
-      ############################
+      # ===============================
 
-      - name: Wait for NGINX pod
-        run: kubectl wait --for=condition=ready pod -l app=nginx --timeout=300s
+      - name: Wait for NGINX pod creation
+        run: |
+          for i in {1..30}; do
+            if kubectl get pods -l app=nginx | grep Running; then
+              echo "NGINX pod found"
+              break
+            fi
+            echo "Waiting for NGINX pod to be created..."
+            sleep 5
+          done
 
-      - name: Port forward NGINX
+      - name: Wait for NGINX pod ready
+        run: kubectl wait --for=condition=ready pod -l app=nginx --timeout=180s
+
+      - name: Port-forward NGINX
         run: kubectl port-forward svc/nginx-service 8080:80 &
 
-      - name: Validate NGINX 200 OK
+      - name: Validate NGINX HTTP 200
         run: |
           sleep 10
           curl -I http://localhost:8080 | grep "200 OK"
 
-      ############################
-      # MYSQL VALIDATION
-      ############################
+      # ===============================
+      # MYSQL VALIDATION (FIXED)
+      # ===============================
 
-      - name: Wait for MySQL pod
-        run: kubectl wait --for=condition=ready pod -l app=mysql --timeout=300s
+      - name: Wait for MySQL pod creation
+        run: |
+          for i in {1..30}; do
+            if kubectl get pods -l app=mysql | grep Running; then
+              echo "MySQL pod found"
+              break
+            fi
+            echo "Waiting for MySQL pod..."
+            sleep 5
+          done
 
-      - name: Validate MySQL Query
+      - name: Wait for MySQL pod ready
+        run: kubectl wait --for=condition=ready pod -l app=mysql --timeout=180s
+
+      # 🔥 THIS IS THE CRITICAL FIX
+      - name: Wait for MySQL engine (TCP mode)
         run: |
           MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}")
-          kubectl exec $MYSQL_POD -- mysql -uroot -prootpassword -e "SELECT 1;"
 
-      ############################
-      # CLEANUP (ALWAYS RUNS)
-      ############################
+          for i in {1..30}; do
+            if kubectl exec $MYSQL_POD -- \
+              mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -prootpassword --silent; then
+              echo "MySQL engine is ready"
+              break
+            fi
+            echo "Waiting for MySQL engine..."
+            sleep 5
+          done
+
+      - name: Validate MySQL query
+        run: |
+          MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}")
+
+          kubectl exec $MYSQL_POD -- \
+            mysql -h 127.0.0.1 -P 3306 -uroot -prootpassword \
+            -e "SELECT 1;"
+
+      # ===============================
+      # DESTROY INFRA
+      # ===============================
 
       - name: Terraform Destroy
         if: always()
-        run: terraform destroy -auto-approve -var="kubeconfig_path=${PWD}/kubeconfig"
-
-      - name: Delete KIND cluster
-        if: always()
-        run: kind delete cluster --name terraform-ci
+        run: terraform destroy -auto-approve -var="kubeconfig_path=${KUBECONFIG}"
