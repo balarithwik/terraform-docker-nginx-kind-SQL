@@ -1,18 +1,21 @@
-name: Terraform + Kubernetes CI
+name: Terraform + Kind + Nginx + MySQL CI
 
 on:
   push:
     branches: [ "main" ]
+  pull_request:
 
 jobs:
-  deploy:
+  terraform:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install kind
+      # ------------------ Install Dependencies ------------------
+
+      - name: Install Kind
         run: |
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.22.0/kind-linux-amd64
           chmod +x ./kind
@@ -24,14 +27,20 @@ jobs:
           chmod +x kubectl
           sudo mv kubectl /usr/local/bin/
 
-      - name: Create kind cluster
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      # ------------------ Create Kind Cluster ------------------
+
+      - name: Create Kind Cluster
         run: |
           kind create cluster --name terraform-ci
           kind get kubeconfig --name terraform-ci > kubeconfig
-          echo "KUBECONFIG=$PWD/kubeconfig" >> $GITHUB_ENV
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - name: Export KUBECONFIG
+        run: echo "KUBECONFIG=$GITHUB_WORKSPACE/kubeconfig" >> $GITHUB_ENV
+
+      # ------------------ Terraform Apply ------------------
 
       - name: Terraform Init
         run: terraform init
@@ -39,41 +48,37 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -auto-approve -var="kubeconfig_path=${KUBECONFIG}"
 
+      # ------------------ Wait for Kubernetes (CRITICAL FIX) ------------------
 
-      - name: Wait for NGINX Pod
-        run: |
-          kubectl wait --for=condition=ready pod -l app=nginx --timeout=120s
+      - name: Wait for Nginx Deployment
+        run: kubectl wait --for=condition=available deployment/nginx --timeout=180s
 
-      - name: Validate NGINX HTTP 200
-        run: |
-          NGINX_POD=$(kubectl get pods -l app=nginx -o jsonpath="{.items[0].metadata.name}")
-          kubectl port-forward $NGINX_POD 8080:80 &
-          sleep 10
-          curl -I http://localhost:8080 | grep "200 OK"
+      - name: Wait for Nginx Pod
+        run: kubectl wait --for=condition=ready pod -l app=nginx --timeout=180s
+
+      - name: Wait for MySQL Deployment
+        run: kubectl wait --for=condition=available deployment/mysql --timeout=180s
 
       - name: Wait for MySQL Pod
-        run: |
-          kubectl wait --for=condition=ready pod -l app=mysql --timeout=180s
+        run: kubectl wait --for=condition=ready pod -l app=mysql --timeout=180s
 
-      - name: Validate MySQL (Safe Wait + SQL Query)
-        run: |
-          echo "Waiting for MySQL internal readiness..."
+      # ------------------ Validate Nginx (HTTP 200) ------------------
 
+      - name: Get Nginx NodePort
+        run: echo "NGINX_PORT=$(kubectl get svc nginx -o jsonpath='{.spec.ports[0].nodePort}')" >> $GITHUB_ENV
+
+      - name: Validate Nginx HTTP 200
+        run: |
+          curl -I http://localhost:$NGINX_PORT | grep "200 OK"
+
+      # ------------------ Validate MySQL Connectivity ------------------
+
+      - name: Validate MySQL Connection
+        run: |
           MYSQL_POD=$(kubectl get pods -l app=mysql -o jsonpath="{.items[0].metadata.name}")
+          kubectl exec $MYSQL_POD -- mysql -uroot -prootpassword -e "SELECT 1;"
 
-          for i in {1..30}; do
-            if kubectl exec $MYSQL_POD -- \
-              mysqladmin ping -uroot -prootpassword --silent; then
-              echo "MySQL is ready!"
-              break
-            fi
-            echo "MySQL not ready yet... retrying ($i/30)"
-            sleep 5
-          done
-
-          echo "Running SQL validation..."
-          kubectl exec $MYSQL_POD -- \
-            mysql -uroot -prootpassword -e "SHOW DATABASES;"
+      # ------------------ Terraform Destroy ------------------
 
       - name: Terraform Destroy
         if: always()
