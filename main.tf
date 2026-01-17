@@ -2,34 +2,39 @@ terraform {
   required_providers {
     kubernetes = {
       source  = "hashicorp/kubernetes"
-      version = "~> 2.30"
-    }
-    docker = {
-      source  = "kreuzwerker/docker"
-      version = "~> 3.6"
+      version = "~> 2.25"
     }
   }
 }
 
-############################
-# NGINX
-############################
+#################################
+# NGINX DEPLOYMENT
+#################################
+
 resource "kubernetes_deployment" "nginx" {
+  wait_for_rollout = false
+
   metadata {
     name = "nginx"
-    labels = { app = "nginx" }
+    labels = {
+      app = "nginx"
+    }
   }
 
   spec {
     replicas = 1
 
     selector {
-      match_labels = { app = "nginx" }
+      match_labels = {
+        app = "nginx"
+      }
     }
 
     template {
       metadata {
-        labels = { app = "nginx" }
+        labels = {
+          app = "nginx"
+        }
       }
 
       spec {
@@ -46,43 +51,60 @@ resource "kubernetes_deployment" "nginx" {
   }
 }
 
+#################################
+# NGINX SERVICE
+#################################
+
 resource "kubernetes_service" "nginx" {
+  wait_for_load_balancer = false
+
   metadata {
     name = "nginx-service"
   }
 
   spec {
-    selector = { app = "nginx" }
+    selector = {
+      app = "nginx"
+    }
+
+    type = "NodePort"
 
     port {
       port        = 80
       target_port = 80
-      node_port   = 30080
+      node_port  = 30080
     }
-
-    type = "NodePort"
   }
 }
 
-############################
-# MYSQL
-############################
+#################################
+# MYSQL DEPLOYMENT
+#################################
+
 resource "kubernetes_deployment" "mysql" {
+  wait_for_rollout = false
+
   metadata {
     name = "mysql"
-    labels = { app = "mysql" }
+    labels = {
+      app = "mysql"
+    }
   }
 
   spec {
     replicas = 1
 
     selector {
-      match_labels = { app = "mysql" }
+      match_labels = {
+        app = "mysql"
+      }
     }
 
     template {
       metadata {
-        labels = { app = "mysql" }
+        labels = {
+          app = "mysql"
+        }
       }
 
       spec {
@@ -95,11 +117,6 @@ resource "kubernetes_deployment" "mysql" {
             value = "rootpassword"
           }
 
-          env {
-            name  = "MYSQL_DATABASE"
-            value = "testdb"
-          }
-
           port {
             container_port = 3306
           }
@@ -109,19 +126,27 @@ resource "kubernetes_deployment" "mysql" {
   }
 }
 
+#################################
+# MYSQL SERVICE
+#################################
+
 resource "kubernetes_service" "mysql" {
+  wait_for_load_balancer = false
+
   metadata {
     name = "mysql-service"
   }
 
   spec {
-    selector = { app = "mysql" }
+    selector = {
+      app = "mysql"
+    }
+
+    type = "ClusterIP"
 
     port {
       port        = 3306
       target_port = 3306
     }
-
-    type = "ClusterIP"
   }
 }
