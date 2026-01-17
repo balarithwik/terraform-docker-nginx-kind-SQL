@@ -1,10 +1,10 @@
-terraform {
-  required_providers {
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.25"
-    }
-  }
+provider "kubernetes" {
+  config_path = var.kubeconfig_path
+}
+
+variable "kubeconfig_path" {
+  description = "Path to kubeconfig file"
+  type        = string
 }
 
 #################################
@@ -72,7 +72,7 @@ resource "kubernetes_service" "nginx" {
     port {
       port        = 80
       target_port = 80
-      node_port  = 30080
+      node_port   = 30080
     }
   }
 }
